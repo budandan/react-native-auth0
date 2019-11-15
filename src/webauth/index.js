@@ -7,7 +7,11 @@ import verifyToken from '../jwt';
 
 const {A0Auth0} = NativeModules;
 
-const callbackUri = domain => {
+const callbackUri = (domain, redirectUri) => {
+  if (redirectUri) {
+    return redirectUri;
+  }
+
   const bundleIdentifier = A0Auth0.bundleIdentifier;
   return `${bundleIdentifier.toLowerCase()}://${domain}/${
     Platform.OS
@@ -27,7 +31,7 @@ const callbackUri = domain => {
 export default class WebAuth {
   constructor(auth) {
     this.client = auth;
-    const {baseUrl, clientId, domain} = auth;
+    const {clientId, domain} = auth;
     this.domain = domain;
     this.clientId = clientId;
     this.agent = new Agent();
@@ -56,30 +60,30 @@ export default class WebAuth {
    * @memberof WebAuth
    */
   authorize(parameters = {}, options = {}) {
-    const {clientId, domain, client, agent} = this;
+    const {clientId, domain, client, agent, redirectUri} = this;
     return agent.newTransaction().then(({state, verifier, ...defaults}) => {
-      const redirectUri = callbackUri(domain);
+      const redirectToUri = redirectUri || callbackUri(domain);
       const expectedState = parameters.state || state;
       let query = {
         ...defaults,
         clientId,
         responseType: 'code',
-        redirectUri,
+        redirectUri: redirectToUri,
         state: expectedState,
         ...parameters,
       };
       const authorizeUrl = this.client.authorizeUrl(query);
-      return agent.show(authorizeUrl).then(redirectUrl => {
-        if (!redirectUrl || !redirectUrl.startsWith(redirectUri)) {
+      return agent.show(authorizeUrl).then(redirectTo => {
+        if (!redirectTo || !redirectTo.startsWith(redirectToUri)) {
           throw new AuthError({
             json: {
               error: 'a0.redirect_uri.not_expected',
-              error_description: `Expected ${redirectUri} but got ${redirectUrl}`,
+              error_description: `Expected ${redirectTo} but got ${redirectToUri}`,
             },
             status: 0,
           });
         }
-        const query = url.parse(redirectUrl, true).query;
+        const query = url.parse(redirectTo, true).query;
         const {code, state: resultState, error} = query;
         if (error) {
           throw new AuthError({json: query, status: 0});
@@ -88,14 +92,14 @@ export default class WebAuth {
           throw new AuthError({
             json: {
               error: 'a0.state.invalid',
-              error_description: `Invalid state received in redirect url`,
+              error_description: 'Invalid state received in redirect url',
             },
             status: 0,
           });
         }
 
         return client
-          .exchange({code, verifier, redirectUri})
+          .exchange({code, verifier, redirectUri: redirectTo})
           .then(credentials => {
             return verifyToken(credentials.idToken, {
               domain,
@@ -123,9 +127,9 @@ export default class WebAuth {
    * @memberof WebAuth
    */
   clearSession(options = {}) {
-    const {client, agent, domain, clientId} = this;
+    const {client, agent, domain, clientId, redirectUri} = this;
     options.clientId = clientId;
-    options.returnTo = callbackUri(domain);
+    options.returnTo = callbackUri(domain, redirectUri);
     options.federated = options.federated || false;
     const logoutUrl = client.logoutUrl(options);
     return agent.show(logoutUrl, true);
